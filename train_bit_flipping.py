@@ -199,6 +199,7 @@ def build_optimizer(
         reset_interval = reset_interval,
         utility_type = 'abs_mean',
         second_moment_policy = 'zero',
+        reset_optimizer_state = True,
         exclude_module_names = ['fc2']
     )
 

@@ -145,12 +145,12 @@ class CCBP(Optimizer):
         neuron_configs: Sequence[NeuronConfig] | None = None,
         exclude_module_names = ('head', 'classifier'),
         continuous = True,
-        replacement_rate = 0.02,
+        replacement_rate = 0.015,
         continuous_rate = None,
         steepness = 16.0,
-        reset_interval = 20,
-        maturity_steps = 100,
-        utility_type: Literal['contribution', 'abs_mean', 'norm', 'adaptable'] = 'contribution',
+        reset_interval = 1000,
+        maturity_steps = None,
+        utility_type: Literal['contribution', 'abs_mean', 'norm', 'adaptable'] = 'abs_mean',
         utility_ema_decay = 0.99,
         eps = 1e-8,
         outgoing_eps = 1e-4,
@@ -160,12 +160,13 @@ class CCBP(Optimizer):
         second_moment_names = ('exp_avg_sq',),
         transfer_fn: Callable[[Tensor], Tensor] | None = None,
         utility_fn: Callable[[NeuronConfig], Tensor] | None = None,
-        adjust_optimizer_state_fn: AdjustStateFn | None = None
+        adjust_optimizer_state_fn: AdjustStateFn | None = None,
+        reset_optimizer_state: bool | None = None
     ):
         continuous_rate = default(continuous_rate, replacement_rate)
 
         assert 0.0 <= replacement_rate <= 1.0
-        assert maturity_steps >= 0
+        assert maturity_steps is None or maturity_steps >= 0
         assert utility_type in {'contribution', 'abs_mean', 'norm', 'adaptable'}, f"utility_type '{utility_type}' must be one of {{'contribution', 'abs_mean', 'norm', 'adaptable'}}"
         assert second_moment_policy in {'mean', 'zero'}, f"second_moment_policy '{second_moment_policy}' must be one of {{'mean', 'zero'}}"
 
@@ -178,7 +179,11 @@ class CCBP(Optimizer):
         self.replacement_rate = replacement_rate
         self.steepness = steepness
         self.reset_interval = reset_interval
-        self.maturity_steps = maturity_steps
+
+        # maturity defaults: off for continuous (CCBP has no age gating),
+        # CBP maturity threshold of 100 otherwise (paper, Table 3)
+
+        self.maturity_steps = default(maturity_steps, 0 if continuous else 100)
 
         # research hooks: custom continuous transfer curve or utility metric
 
@@ -195,8 +200,22 @@ class CCBP(Optimizer):
         self.first_moment_names = tuple(first_moment_names)
         self.second_moment_names = tuple(second_moment_names)
 
+        # base optimizer state (e.g. Adam moments) resets default to off for
+        # continuous CCBP (paper: parameter resets not necessary); for discrete
+        # CBP, auto-detect the base optimizer and reset state of reset units,
+        # via a registered handler when one exists, else the default heuristics
+
+        custom_adjust_fn = exists(adjust_optimizer_state_fn)
+
+        self.reset_optimizer_state = default(reset_optimizer_state, not continuous)
+
         opt_handler = OPTIMIZER_HANDLERS.get(type(base_optimizer))
-        self.adjust_optimizer_state_fn = default(adjust_optimizer_state_fn, default(opt_handler, default_adjust_optimizer_state))
+        self.adjust_optimizer_state_fn = None
+
+        if custom_adjust_fn:
+            self.adjust_optimizer_state_fn = adjust_optimizer_state_fn
+        elif self.reset_optimizer_state:
+            self.adjust_optimizer_state_fn = default(opt_handler, default_adjust_optimizer_state)
 
         self.step_count = 0
         self.remainder = dict()
@@ -269,6 +288,9 @@ class CCBP(Optimizer):
             self.neuron_states[k] = tree_map_tensor_to_device(saved, device)
 
     def _adjust_states_for_param(self, param: Parameter, alpha: Tensor, dim: int):
+        if not exists(self.adjust_optimizer_state_fn):
+            return
+
         if param not in self.base_optimizer.state:
             return
 

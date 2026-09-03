@@ -36,12 +36,7 @@ base_opt = Adam(model.parameters(), lr = 1e-3)
 
 opt = CCBP(
     base_opt,
-    model = model,
-    continuous = True,       # continuous soft reset
-    replacement_rate = 0.02, # 2% max reset rate
-    steepness = 16.0,        # how sharply to reset below-average neurons
-    reset_interval = 20,     # reset interval
-    maturity_steps = 100     # steps before eligible for reset
+    model = model
 )
 
 # standard training loop
@@ -62,9 +57,7 @@ opt = CCBP(
     base_opt,
     model = model,
     continuous = False,
-    replacement_rate = 0.001,
-    reset_interval = 20,
-    maturity_steps = 100
+    replacement_rate = 0.003
 )
 ```
 

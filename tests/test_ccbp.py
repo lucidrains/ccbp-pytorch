@@ -7,7 +7,7 @@ from torch.optim import SGD, Adam
 from einops import rearrange, reduce
 from x_mlps_pytorch import MLP
 
-from ccbp_pytorch import CCBP, NeuronConfig, find_neuron_configs
+from ccbp_pytorch import CCBP, NeuronConfig, default_adjust_optimizer_state, find_neuron_configs
 
 param = pytest.mark.parametrize
 
@@ -216,6 +216,7 @@ def test_lion_optimizer():
         reset_interval = 2,
         first_moment_names = ('exp_avg',),
         second_moment_names = (),
+        reset_optimizer_state = True,
         exclude_module_names = ('layers.1',)
     )
 
@@ -501,3 +502,74 @@ def test_ccbp_reset():
     # continue training after reset
     train_steps(model, opt, x, target, 2)
     assert opt.step_count == 2
+
+def test_continuous_ccbp_defaults_match_paper():
+    model = MLP(4, 8, 2)
+    base_opt = Adam(model.parameters(), lr = 1e-2)
+
+    opt = CCBP(
+        base_opt,
+        model = model,
+        exclude_module_names = ('layers.1',)
+    )
+
+    # paper Table 3 optimal values (SlipperyAnt)
+
+    assert opt.continuous
+    assert opt.continuous_rate == 0.015
+    assert opt.steepness == 16.0
+    assert opt.reset_interval == 1000
+    assert opt.utility_type == 'abs_mean'
+    assert opt.utility_ema_decay == 0.99
+
+    # CCBP (Algorithm 1) has no age gating and does not reset base optimizer state
+
+    assert opt.maturity_steps == 0
+    assert opt.reset_optimizer_state is False
+    assert opt.adjust_optimizer_state_fn is None
+
+def test_discrete_cbp_defaults_from_paper():
+    model = MLP(4, 8, 2)
+    base_opt = Adam(model.parameters(), lr = 1e-2)
+
+    opt = CCBP(
+        base_opt,
+        model = model,
+        continuous = False,
+        exclude_module_names = ('layers.1',)
+    )
+
+    # paper Table 3: CBP maturity threshold of 100
+
+    assert opt.maturity_steps == 100
+    assert opt.reset_optimizer_state is True
+    assert opt.adjust_optimizer_state_fn is default_adjust_optimizer_state
+
+def test_explicit_off_overrides_mode_defaults():
+    model = MLP(4, 8, 2)
+    base_opt = Adam(model.parameters(), lr = 1e-2)
+
+    opt = CCBP(
+        base_opt,
+        model = model,
+        continuous = False,
+        maturity_steps = 0,
+        reset_optimizer_state = False,
+        exclude_module_names = ('layers.1',)
+    )
+
+    assert opt.maturity_steps == 0
+    assert opt.reset_optimizer_state is False
+    assert opt.adjust_optimizer_state_fn is None
+
+    # continuous with maturity enabled explicitly still works
+
+    opt2 = CCBP(
+        base_opt,
+        model = model,
+        continuous = True,
+        maturity_steps = 5,
+        exclude_module_names = ('layers.1',)
+    )
+
+    assert opt2.maturity_steps == 5
